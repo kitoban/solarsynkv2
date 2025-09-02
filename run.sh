@@ -5,13 +5,13 @@ do
 CONFIG_PATH=/data/options.json
 
 sunsynk_user=""
-sunsynk_pass=""
+sunsynk_pass_plain=""
 sunsynk_serial=""
 HA_LongLiveToken=""
 Home_Assistant_IP=""
 
 sunsynk_user="$(bashio::config 'sunsynk_user')"
-sunsynk_pass="$(bashio::config 'sunsynk_pass')"
+sunsynk_pass_plain="$(bashio::config 'sunsynk_pass')"
 sunsynk_serial="$(bashio::config 'sunsynk_serial')"
 HA_LongLiveToken="$(bashio::config 'HA_LongLiveToken')"
 Home_Assistant_IP="$(bashio::config 'Home_Assistant_IP')"
@@ -35,19 +35,67 @@ echo -- SolarSynk - Log
 echo ------------------------------------------------------------------------------
 echo "Script execution date & time:" $dt
 echo "Verbose logging is set to:" $Enable_Verbose_Log
-echo "HTTP Connect type:" $HTTP_Connect_Type
-#echo $sunsynk_user
-#echo $sunsynk_pass
-#echo $sunsynk_serial
-#echo $HA_LongLiveToken
+if [ $Enable_Verbose_Log == "true" ]
+then
+  echo "HTTP Connect type:" $HTTP_Connect_Type
+  echo "Sunsynk User:" $sunsynk_user
+  echo "Sunsynk Password:" $sunsynk_pass_plain
+  echo "Sunsynk Serial:" $sunsynk_serial
+  echo "HA Token:" $HA_LongLiveToken
+fi
+
+echo "Encrypting password"
+# Filepaths for the keys and data.
+PASSWORD_PUBLIC_KEY_FILE="password_public_key.pem"
+PASSWORD_PLAINTEXT_FILE="password_plaintext.txt"
+
+# Fetch the public key from the API and store it in a variable.
+PASSWORD_PUBLIC_KEY=$(curl -s 'https://api.sunsynk.net/anonymous/publicKey?source=sunsynk' | jq -r '.data')
+
+# Check if the public key was successfully fetched.
+if [ -n "$PASSWORD_PUBLIC_KEY" ]; then
+	if [ $Enable_Verbose_Log == "true" ]
+	then
+		echo "Encrytion Key:" $PASSWORD_PUBLIC_KEY
+	fi
+else
+  echo "Error: Could not fetch public key. Please check the API endpoint and your internet connection."
+  exit 1
+fi
+
+# Save the public key to a file with the required headers.
+echo "-----BEGIN PUBLIC KEY-----" > "$PASSWORD_PUBLIC_KEY_FILE"
+echo "$PASSWORD_PUBLIC_KEY" >> "$PASSWORD_PUBLIC_KEY_FILE"
+echo "-----END PUBLIC KEY-----" >> "$PASSWORD_PUBLIC_KEY_FILE"
+
+# Save the plaintext to a file.
+echo -n "$sunsynk_pass_plain" > "$PASSWORD_PLAINTEXT_FILE"
+
+# Encrypt the plaintext and store the binary output in a variable.
+# We use 'openssl pkeyutl' for key-based utility operations.
+# The output is piped to 'base64' to store it as a string.
+sunsynk_pass=$(openssl pkeyutl -encrypt -pubin -inkey "$PASSWORD_PUBLIC_KEY_FILE" -in "$PASSWORD_PLAINTEXT_FILE" | base64 -w 0)
+
+# Check if the encryption was successful and print the result.
+if [ -n "$sunsynk_pass" ]; then
+  if [ $Enable_Verbose_Log == "true" ]
+  then
+    echo "Sunsynk Password Encrypted:" $sunsynk_pass
+  fi
+else
+  echo "Encryption failed. Please check the key and file paths."
+  exit 1
+fi
+
+# Clean up the temporary files.
+rm -rf "$PASSWORD_PUBLIC_KEY_FILE"
+rm -rf "$PASSWORD_PLAINTEXT_FILE"
 
 echo "Getting bearer token from solar service provider's API."
-#ServerAPIBearerToken=$(curl -s -k -X POST -H "Content-Type: application/json" https://api.sunsynk.net/oauth/token -d '{"areaCode": "sunsynk","client_id": "csp-web","grant_type": "password","password": "'"$sunsynk_pass"'","source": "sunsynk","username": "'"$sunsynk_user"'"}' | jq -r '.data.access_token')
-#echo "Bearer Token length:" ${#ServerAPIBearerToken}
 
 while true; do
     # Fetch the token using curl
-   ServerAPIBearerToken=$(curl -s -k -X POST -H "Content-Type: application/json" https://api.sunsynk.net/oauth/token -d '{"areaCode": "sunsynk","client_id": "csp-web","grant_type": "password","password": "'"$sunsynk_pass"'","source": "sunsynk","username": "'"$sunsynk_user"'"}' | jq -r '.data.access_token')
+       ServerAPIBearerToken=$(curl -s -k -X POST -H "Content-Type: application/json" https://api.sunsynk.net/oauth/token/new -d '{"client_id": "csp-web","grant_type": "password","password": "'"$sunsynk_pass"'","source": "sunsynk","username": "'"$sunsynk_user"'"}' | jq -r '.data.access_token')
     # Check if the token length is at least 5 characters
 if [ ${#ServerAPIBearerToken} -ge 300 ]
 then
